@@ -1,613 +1,562 @@
 --[[
-    RIVALS ULTRA CHEAT by NocturAI Code
-    Features: Aimbot, Silent Aim, ESP, AutoFarm, Godmode, Fly, Teleport
-    Usage: loadstring(game:HttpGet("https://..."))();
-]]
+    RIVALS ULTRA LOADER v3
+    UI améliorée + debug intégré + correction du bug post-validation
+--]]
+
+local URL_KEYS = "https://raw.githubusercontent.com/rayzersaphirz-lgtm/rivals-cdn/refs/heads/main/keys.txt"
+local URL_CHEAT = "https://raw.githubusercontent.com/rayzersaphirz-lgtm/rivals-cdn/refs/heads/main/init.lua"
 
 -- Services
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
-local Camera = Workspace.CurrentCamera
-local ContextActionService = game:GetService("ContextActionService")
-local VirtualInputManager = game:GetService("VirtualInputManager")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
+local Camera = workspace.CurrentCamera
 
--- Anti-Detection: Disable hook spy
-local old; old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-    if method == "FindFirstChild" and self == game then
-        local args = {...}
-        if args[1] == "RobloxReplicatedStorage" then
-            return nil
-        end
+-- ==================== CONSOLE DE DEBUG ====================
+local debugMessages = {}
+local function debug(msg, color)
+    color = color or Color3.fromRGB(180, 180, 180)
+    table.insert(debugMessages, {
+        text = "[" .. os.date("%H:%M:%S") .. "] " .. msg,
+        color = color,
+        time = tick()
+    })
+    -- Limiter à 50 messages
+    if #debugMessages > 50 then
+        table.remove(debugMessages, 1)
     end
-    return old(self, ...)
-end))
-
--- Clean metatables
-for _, v in pairs(getconnections(Players.LocalPlayer.Idled)) do
-    v:Disable()
+    -- Aussi dans la console Roblox
+    print("[RIVALS]", msg)
 end
 
--- Identify game-specific events
-local AttackRemote = nil
-local DashRemote = nil
-local MoveRemote = nil
-for _, v in pairs(ReplicatedStorage:GetDescendants()) do
-    if v:IsA("RemoteEvent") then
-        if v.Name:lower():find("attack") then
-            AttackRemote = v
-        elseif v.Name:lower():find("dash") or v.Name:lower():find("roll") then
-            DashRemote = v
-        elseif v.Name:lower():find("move") then
-            MoveRemote = v
-        end
-    end
-end
-if not AttackRemote then
-    -- fallback: first RemoteEvent in ReplicatedStorage
-    for _, v in pairs(ReplicatedStorage:GetDescendants()) do
-        if v:IsA("RemoteEvent") then
-            AttackRemote = v
-            break
-        end
-    end
-end
-
--- GUI Setup
-local UIS = UserInputService
-local screensize = Vector2.new(Camera.ViewportSize.X, Camera.ViewportSize.Y)
-local gui = {
-    open = true,
-    tabs = {},
-    currentTab = "Combat",
-}
-
--- Drawing Library Wrapper (creates a basic UI)
+-- ==================== ÉLÉMENTS DRAWING ====================
 local drawings = {}
 local function newDrawing(type, props)
-    local d
-    if type == "Square" then
-        d = Drawing.new("Square")
-    elseif type == "Text" then
-        d = Drawing.new("Text")
-    elseif type == "Line" then
-        d = Drawing.new("Line")
-    elseif type == "Circle" then
-        d = Drawing.new("Circle")
-    end
-    for k,v in pairs(props) do
-        d[k] = v
+    local d = Drawing.new(type)
+    for k, v in pairs(props) do
+        pcall(function() d[k] = v end)
     end
     table.insert(drawings, d)
     return d
 end
 
--- Menu background
-local menuBG = newDrawing("Square", {
-    Size = Vector2.new(500, 380),
-    Position = Vector2.new(50, 50),
-    Color = Color3.fromRGB(30,30,30),
-    Transparency = 0.7,
-    Visible = false,
-})
-local menuTitle = newDrawing("Text", {
-    Text = "Rivals Ultra",
-    Size = 24,
-    Position = Vector2.new(60, 55),
-    Color = Color3.fromRGB(255,100,100),
-    Center = false,
-    Outline = true,
-    Visible = false,
-})
-
--- Tab system
-local tabs = {"Combat", "Visuals", "Movement", "Misc"}
-local tabButtons = {}
-local function drawTab(name, idx)
-    local x = 60 + (idx-1)*110
-    local btn = newDrawing("Square", {
-        Size = Vector2.new(100, 25),
-        Position = Vector2.new(x, 85),
-        Color = name == gui.currentTab and Color3.fromRGB(180,50,50) or Color3.fromRGB(50,50,50),
-        Visible = false,
-    })
-    local txt = newDrawing("Text", {
-        Text = name,
-        Size = 16,
-        Position = Vector2.new(x+10, 88),
-        Color = Color3.fromRGB(255,255,255),
-        Visible = false,
-    })
-    table.insert(tabButtons, {btn = btn, txt = txt, name = name, x = x})
-end
-for i, t in ipairs(tabs) do
-    drawTab(t, i)
-end
-
--- Toggle/Slider creation
-local options = {}
-local function addToggle(tab, name, default, callback)
-    table.insert(options, {type="toggle", tab=tab, name=name, value=default, callback=callback})
-end
-local function addSlider(tab, name, min, max, default, step, callback)
-    table.insert(options, {type="slider", tab=tab, name=name, min=min, max=max, value=default, step=step, callback=callback})
-end
-
--- Declare UI elements later when drawing
-local optionDrawings = {}
-local function refreshOptions()
-    -- Remove old drawings for options
-    for _, d in ipairs(optionDrawings) do
-        d:Remove()
-    end
-    optionDrawings = {}
-    local yOff = 120
-    local tabFilter = gui.currentTab
-    for _, opt in ipairs(options) do
-        if opt.tab == tabFilter then
-            local y = yOff
-            -- Background row
-            local rowBG = newDrawing("Square", {
-                Size = Vector2.new(480, 30),
-                Position = Vector2.new(55, y),
-                Color = Color3.fromRGB(40,40,40),
-                Visible = gui.open,
-            })
-            table.insert(optionDrawings, rowBG)
-            -- Name
-            local nameTxt = newDrawing("Text", {
-                Text = opt.name,
-                Size = 16,
-                Position = Vector2.new(60, y+5),
-                Color = Color3.fromRGB(255,255,255),
-                Visible = gui.open,
-            })
-            table.insert(optionDrawings, nameTxt)
-            -- Toggle
-            if opt.type == "toggle" then
-                local toggleBtn = newDrawing("Square", {
-                    Size = Vector2.new(20, 20),
-                    Position = Vector2.new(400, y+5),
-                    Color = opt.value and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,0,0),
-                    Visible = gui.open,
-                })
-                table.insert(optionDrawings, toggleBtn)
-                -- On click detection in loop
-            elseif opt.type == "slider" then
-                local sliderW = 150
-                local sliderX = 350
-                local fillPct = (opt.value - opt.min) / (opt.max - opt.min)
-                local sliderBG = newDrawing("Square", {
-                    Size = Vector2.new(sliderW, 6),
-                    Position = Vector2.new(sliderX, y+12),
-                    Color = Color3.fromRGB(100,100,100),
-                    Visible = gui.open,
-                })
-                table.insert(optionDrawings, sliderBG)
-                local sliderFill = newDrawing("Square", {
-                    Size = Vector2.new(sliderW * fillPct, 6),
-                    Position = Vector2.new(sliderX, y+12),
-                    Color = Color3.fromRGB(255,150,0),
-                    Visible = gui.open,
-                })
-                table.insert(optionDrawings, sliderFill)
-                local valTxt = newDrawing("Text", {
-                    Text = tostring(opt.value),
-                    Size = 14,
-                    Position = Vector2.new(sliderX + sliderW + 5, y+5),
-                    Color = Color3.fromRGB(255,255,255),
-                    Visible = gui.open,
-                })
-                table.insert(optionDrawings, valTxt)
-            end
-            yOff = yOff + 32
-        end
-    end
-end
-
--- Initial options
-addToggle("Combat", "Aimbot", true, function(v) options.aimbot = v end)
-addSlider("Combat", "Aim Fov", 50, 500, 150, 1, function(v) options.fov = v end)
-addSlider("Combat", "Smoothness", 1, 20, 5, 1, function(v) options.smooth = v end)
-addToggle("Combat", "Silent Aim", false, function(v) options.silent = v end)
-addToggle("Visuals", "ESP Box", true, function(v) options.esp = v end)
-addToggle("Visuals", "ESP Names", true, function(v) options.espNames = v end)
-addToggle("Visuals", "Health Bar", true, function(v) options.espHealth = v end)
-addToggle("Movement", "Fly", false, function(v) options.fly = v end)
-addSlider("Movement", "Fly Speed", 20, 200, 50, 5, function(v) options.flySpeed = v end)
-addToggle("Misc", "Godmode", false, function(v) options.godmode = v end)
-addToggle("Misc", "Auto-Farm", false, function(v) options.autofarm = v end)
-
--- Helper to get closest enemy to crosshair
-local function closestEnemy()
-    local closest = nil
-    local minDist = options.fov or 150
-    local camPos = Camera.CFrame.Position
-    local mousePos = UIS:GetMouseLocation()
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr ~= Players.LocalPlayer and plr.Character and plr.Character:FindFirstChild("Head") then
-            local head = plr.Character.Head
-            local screenPos, onScreen = Camera:WorldToScreenPoint(head.Position)
-            if onScreen then
-                local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
-                if dist < minDist then
-                    minDist = dist
-                    closest = plr
-                end
-            end
-        end
-    end
-    return closest
-end
-
--- Aimbot logic
-RunService.RenderStepped:Connect(function(deltaTime)
-    if options.aimbot and gui.open then
-        local target = closestEnemy()
-        if target and target.Character and target.Character:FindFirstChild("Head") then
-            local headPos = target.Character.Head.Position
-            local camCF = Camera.CFrame
-            local direction = (headPos - camCF.Position).Unit
-            local smooth = options.smooth or 5
-            local newLook = camCF.LookVector:Lerp(direction, deltaTime * smooth * 10)
-            Camera.CFrame = CFrame.lookAt(camCF.Position, camCF.Position + newLook * 100)
-        end
-    end
-end)
-
--- Silent Aim hook
-local oldFireServer; oldFireServer = hookfunction(getconnections(AttackRemote.OnServerEvent)[1].Function, newcclosure(function(self, player, ...)
-    if options.silent and player == Players.LocalPlayer then
-        local target = closestEnemy()
-        if target and target.Character and target.Character:FindFirstChild("Head") then
-            local headPos = target.Character.Head.Position
-            local args = {...}
-            -- Assume attack event sends a direction Vector3 or CFrame
-            if typeof(args[1]) == "Vector3" then
-                args[1] = (headPos - (player.Character.HumanoidRootPart.Position)).Unit * 1000 -- fake direction
-            elseif typeof(args[1]) == "CFrame" then
-                args[1] = CFrame.lookAt(player.Character.HumanoidRootPart.Position, headPos)
-            end
-            return oldFireServer(self, player, unpack(args))
-        end
-    end
-    return oldFireServer(self, player, ...)
-end))
-
--- ESP
-RunService.RenderStepped:Connect(function()
-    if not options.esp then return end
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr ~= Players.LocalPlayer and plr.Character then
-            local head = plr.Character:FindFirstChild("Head")
-            local humanoid = plr.Character:FindFirstChildOfClass("Humanoid")
-            if head and humanoid then
-                local pos, onScreen = Camera:WorldToScreenPoint(head.Position)
-                if onScreen then
-                    local rootPos = plr.Character.HumanoidRootPart.Position
-                    local bottomPos = rootPos - Vector3.new(0,3,0)
-                    local topPos = rootPos + Vector3.new(0,3,0)
-                    local screenBottom = Camera:WorldToScreenPoint(bottomPos)
-                    local screenTop = Camera:WorldToScreenPoint(topPos)
-                    local height = math.abs(screenBottom.Y - screenTop.Y)
-                    local width = height / 2
-                    local x = pos.X - width/2
-                    local y = screenTop.Y < screenBottom.Y and screenTop.Y or screenBottom.Y
-                    if options.esp then
-                        -- Box
-                        Drawing.new("Square", {
-                            Size = Vector2.new(width, height),
-                            Position = Vector2.new(x, y),
-                            Color = Color3.fromRGB(255,0,0),
-                            Thickness = 2,
-                            Visible = true,
-                        }):Remove() -- for demo we'd cache these, but for brevity just draw each frame
-                    end
-                    if options.espNames then
-                        Drawing.new("Text", {
-                            Text = plr.Name,
-                            Size = 14,
-                            Position = Vector2.new(x, y - 20),
-                            Color = Color3.fromRGB(255,255,255),
-                            Center = true,
-                            Visible = true,
-                        }):Remove()
-                    end
-                    if options.espHealth then
-                        local health = humanoid.Health / humanoid.MaxHealth
-                        local barW = width
-                        local barH = 4
-                        Drawing.new("Square", {
-                            Size = Vector2.new(barW, barH),
-                            Position = Vector2.new(x, y - 10),
-                            Color = Color3.fromRGB(0,255,0),
-                            Visible = true,
-                        }):Remove()
-                        Drawing.new("Square", {
-                            Size = Vector2.new(barW * health, barH),
-                            Position = Vector2.new(x, y - 10),
-                            Color = Color3.fromRGB(255,0,0),
-                            Visible = true,
-                        }):Remove()
-                    end
-                    -- Distance text
-                    local dist = (Camera.CFrame.Position - rootPos).Magnitude
-                    Drawing.new("Text", {
-                        Text = string.format("%.0f studs", dist),
-                        Size = 12,
-                        Position = Vector2.new(x, y + height),
-                        Color = Color3.fromRGB(255,255,255),
-                        Center = true,
-                        Visible = true,
-                    }):Remove()
-                end
-            end
-        end
-    end
-end)
-
--- AutoFarm
-RunService.Heartbeat:Connect(function()
-    if not (options.autofarm and gui.open) then return end
-    local selfChar = Players.LocalPlayer.Character
-    if not selfChar then return end
-    local hum = selfChar:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then return end
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr ~= Players.LocalPlayer and plr.Character and plr.Character:FindFirstChild("Humanoid") then
-            local enemyHum = plr.Character.Humanoid
-            if enemyHum.Health > 0 and (plr.Character.HumanoidRootPart.Position - selfChar.HumanoidRootPart.Position).Magnitude < 20 then
-                -- Attack
-                if AttackRemote then
-                    AttackRemote:FireServer()
-                end
-                -- Dash away if close
-                if (plr.Character.HumanoidRootPart.Position - selfChar.HumanoidRootPart.Position).Magnitude < 5 and DashRemote then
-                    DashRemote:FireServer()
-                end
-                break
-            end
-        end
-    end
-end)
-
--- Godmode (client-side)
-RunService.Heartbeat:Connect(function()
-    if not (options.godmode and gui.open) then return end
-    local char = Players.LocalPlayer.Character
-    if char then
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if hum then
-            hum.Health = hum.MaxHealth -- force full health every tick
-        end
-    end
-end)
-
--- Fly system
-local flyConnection
-local function setFly(active)
-    if active then
-        local char = Players.LocalPlayer.Character
-        if not char then return end
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if not hrp or not hum then return end
-        local bv = Instance.new("BodyVelocity")
-        bv.Velocity = Vector3.new(0,0,0)
-        bv.MaxForce = Vector3.new(400000, 400000, 400000)
-        bv.P = 900
-        bv.Parent = hrp
-        local bg = Instance.new("BodyGyro")
-        bg.CFrame = CFrame.new()
-        bg.MaxTorque = Vector3.new(400000, 400000, 400000)
-        bg.P = 900
-        bg.Parent = hrp
-        flyConnection = RunService.RenderStepped:Connect(function()
-            if not options.fly then return end
-            local speed = options.flySpeed or 50
-            local dir = Vector3.zero
-            if UserInputService:IsKeyDown(Enum.KeyCode.W) then
-                dir = dir + Camera.CFrame.LookVector
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.S) then
-                dir = dir - Camera.CFrame.LookVector
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.A) then
-                dir = dir - Camera.CFrame.RightVector
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.D) then
-                dir = dir + Camera.CFrame.RightVector
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.E) then
-                dir = dir + Vector3.new(0,1,0)
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.Q) then
-                dir = dir - Vector3.new(0,1,0)
-            end
-            bv.Velocity = dir * speed
-            bg.CFrame = Camera.CFrame
-        end)
-    else
-        if flyConnection then
-            flyConnection:Disconnect()
-            flyConnection = nil
-        end
-        local char = Players.LocalPlayer.Character
-        if char then
-            local hrp = char:FindFirstChild("HumanoidRootPart")
-            if hrp then
-                hrp:FindFirstChildOfClass("BodyVelocity"):Destroy()
-                hrp:FindFirstChildOfClass("BodyGyro"):Destroy()
-            end
-        end
-    end
-end
-options.flyCallback = function(val)
-    setFly(val)
-end
-
--- Teleport
-local function teleportTo(targetPlayer)
-    local selfChar = Players.LocalPlayer.Character
-    local targetChar = targetPlayer.Character
-    if not (selfChar and targetChar) then return end
-    selfChar.HumanoidRootPart.CFrame = targetChar.HumanoidRootPart.CFrame + Vector3.new(0,3,0)
-end
-local function tpCursor()
-    local mouse = Players.LocalPlayer:GetMouse()
-    local ray = Ray.new(Camera.CFrame.Position, (mouse.Hit.Position - Camera.CFrame.Position).Unit * 1000)
-    local part, pos = workspace:FindPartOnRayWithIgnoreList(ray, {Players.LocalPlayer.Character})
-    if pos then
-        Players.LocalPlayer.Character.HumanoidRootPart.CFrame = CFrame.new(pos) + Vector3.new(0,3,0)
-    end
-end
-
--- GUI Input Handling
-local mouseDown = false
-local dragging = false
-local dragOffset = Vector2.zero
-local draggingSlider = nil
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed and input.UserInputType ~= Enum.UserInputType.MouseButton2 then return end
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        mouseDown = true
-        local mousePos = UIS:GetMouseLocation()
-        -- Check tab buttons
-        for _, btn in ipairs(tabButtons) do
-            if mousePos.X >= btn.x and mousePos.X <= btn.x+100 and mousePos.Y >= 85 and mousePos.Y <= 110 then
-                gui.currentTab = btn.name
-                refreshOptions()
-                return
-            end
-        end
-        -- Check options toggles/sliders
-        local yOff = 120
-        for _, opt in ipairs(options) do
-            if opt.tab == gui.currentTab then
-                if opt.type == "toggle" and mousePos.X >= 400 and mousePos.X <= 420 and mousePos.Y >= yOff+5 and mousePos.Y <= yOff+25 then
-                    opt.value = not opt.value
-                    if opt.callback then opt.callback(opt.value) end
-                    refreshOptions()
-                    return
-                elseif opt.type == "slider" then
-                    local sliderX = 350
-                    local sliderW = 150
-                    if mousePos.Y >= yOff+12-10 and mousePos.Y <= yOff+12+10 then
-                        draggingSlider = opt
-                        local frac = math.clamp((mousePos.X - sliderX) / sliderW, 0, 1)
-                        opt.value = math.floor(opt.min + (opt.max-opt.min)*frac)
-                        if opt.callback then opt.callback(opt.value) end
-                        refreshOptions()
-                    end
-                end
-                yOff = yOff + 32
-            end
-        end
-        -- Menu drag
-        if mousePos.X >= menuBG.Position.X and mousePos.X <= menuBG.Position.X+menuBG.Size.X and mousePos.Y >= menuBG.Position.Y and mousePos.Y <= menuBG.Position.Y+30 then
-            dragging = true
-            dragOffset = menuBG.Position - mousePos
-        end
-    elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
-        -- Right click for teleport to cursor
-        if options.tpCursor then
-            tpCursor()
-        end
-    end
-end)
-
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        mouseDown = false
-        dragging = false
-        draggingSlider = nil
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement then
-        if dragging then
-            local mousePos = UIS:GetMouseLocation()
-            menuBG.Position = mousePos + dragOffset
-            menuTitle.Position = menuBG.Position + Vector2.new(10,5)
-            for _, btn in ipairs(tabButtons) do
-                btn.btn.Position = Vector2.new(btn.x, btn.btn.Position.Y)
-                btn.txt.Position = btn.btn.Position + Vector2.new(10,3)
-            end
-        elseif draggingSlider then
-            local mousePos = UIS:GetMouseLocation()
-            local sliderX = 350
-            local sliderW = 150
-            local frac = math.clamp((mousePos.X - sliderX) / sliderW, 0, 1)
-            draggingSlider.value = math.floor(draggingSlider.min + (draggingSlider.max - draggingSlider.min) * frac)
-            if draggingSlider.callback then draggingSlider.callback(draggingSlider.value) end
-            refreshOptions()
-        end
-    end
-end)
-
--- Toggle menu with Insert key
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if input.KeyCode == Enum.KeyCode.Insert then
-        gui.open = not gui.open
-        menuBG.Visible = gui.open
-        menuTitle.Visible = gui.open
-        for _, btn in ipairs(tabButtons) do
-            btn.btn.Visible = gui.open
-            btn.txt.Visible = gui.open
-        end
-        refreshOptions()
-    end
-end)
-
--- Save/Load config
-local configPath = "rivals_config.json"
-local function saveConfig()
-    local cfg = {}
-    for _, opt in ipairs(options) do
-        cfg[opt.name] = opt.value
-    end
-    writefile(configPath, HttpService:JSONEncode(cfg))
-end
-local function loadConfig()
-    pcall(function()
-        local json = readfile(configPath)
-        local cfg = HttpService:JSONDecode(json)
-        for _, opt in ipairs(options) do
-            if cfg[opt.name] ~= nil then
-                opt.value = cfg[opt.name]
-                if opt.callback then opt.callback(opt.value) end
-            end
-        end
-        refreshOptions()
-    end)
-end
-loadConfig()
-
--- Cleanup on script end
-local function cleanup()
+local function removeAllDrawings()
     for _, d in ipairs(drawings) do
         pcall(function() d:Remove() end)
     end
-    for _, d in ipairs(optionDrawings) do
-        pcall(function() d:Remove() end)
-    end
-    if flyConnection then
-        flyConnection:Disconnect()
-        setFly(false)
-    end
-    saveConfig()
+    drawings = {}
 end
-script:GetPropertyChangedSignal("Parent"):Connect(function()
-    if not script.Parent then
-        cleanup()
+
+-- ==================== ANIMATIONS FLUIDES ====================
+local animations = {}
+local function animate(property, from, to, duration, drawObj)
+    animations[drawObj] = animations[drawObj] or {}
+    animations[drawObj][property] = {
+        from = from,
+        to = to,
+        start = tick(),
+        duration = duration,
+        obj = drawObj,
+        prop = property
+    }
+end
+
+RunService.RenderStepped:Connect(function()
+    local now = tick()
+    for obj, props in pairs(animations) do
+        for prop, data in pairs(props) do
+            local elapsed = now - data.start
+            if elapsed >= data.duration then
+                -- Animation finie
+                pcall(function() obj[prop] = data.to end)
+                props[prop] = nil
+            else
+                local t = elapsed / data.duration
+                -- Ease out quad
+                t = 1 - (1 - t) * (1 - t)
+                local val
+                if type(data.from) == "number" then
+                    val = data.from + (data.to - data.from) * t
+                elseif type(data.from) == "Vector2" then
+                    val = Vector2.new(
+                        data.from.X + (data.to.X - data.from.X) * t,
+                        data.from.Y + (data.to.Y - data.from.Y) * t
+                    )
+                elseif type(data.from) == "Color3" then
+                    val = data.from:Lerp(data.to, t)
+                end
+                pcall(function() obj[prop] = val end)
+            end
+        end
     end
 end)
 
--- Initial refresh
-refreshOptions()
-setFly(options.fly)
+-- ==================== GUI PRINCIPALE ====================
+local screenX = Camera.ViewportSize.X
+local screenY = Camera.ViewportSize.Y
+local centerX = screenX / 2
+local centerY = screenY / 2
+
+-- Dimensions
+local W, H = 440, 320
+local guiX, guiY = centerX - W/2, centerY - H/2
+
+local gui = {}
+
+-- Fond principal (ombre)
+gui.shadow = newDrawing("Square", {
+    Size = Vector2.new(W + 24, H + 24),
+    Position = Vector2.new(guiX - 12, guiY - 12),
+    Color = Color3.fromRGB(0, 0, 0),
+    Transparency = 0.5,
+    Visible = true,
+    Filled = true,
+})
+
+-- Fond principal
+gui.bg = newDrawing("Square", {
+    Size = Vector2.new(W, H),
+    Position = Vector2.new(guiX, guiY),
+    Color = Color3.fromRGB(16, 16, 20),
+    Transparency = 0.95,
+    Visible = true,
+    Filled = true,
+})
+
+-- Bordure dégradée simulée (haut)
+gui.borderTop = newDrawing("Line", {
+    From = Vector2.new(guiX, guiY),
+    To = Vector2.new(guiX + W, guiY),
+    Color = Color3.fromRGB(200, 60, 60),
+    Thickness = 2,
+    Visible = true,
+})
+
+-- Accent rouge en haut
+gui.accent = newDrawing("Square", {
+    Size = Vector2.new(W, 3),
+    Position = Vector2.new(guiX, guiY),
+    Color = Color3.fromRGB(220, 50, 50),
+    Visible = true,
+    Filled = true,
+})
+
+-- Logo / Titre
+gui.logo = newDrawing("Text", {
+    Text = "⚔ RIVALS ULTRA",
+    Size = 28,
+    Position = Vector2.new(guiX + 25, guiY + 20),
+    Color = Color3.fromRGB(255, 255, 255),
+    Font = 2,
+    Visible = true,
+})
+
+-- Version
+gui.version = newDrawing("Text", {
+    Text = "v1.0.0",
+    Size = 12,
+    Position = Vector2.new(guiX + W - 60, guiY + 27),
+    Color = Color3.fromRGB(120, 120, 120),
+    Visible = true,
+})
+
+-- Séparateur
+gui.separator = newDrawing("Line", {
+    From = Vector2.new(guiX + 20, guiY + 55),
+    To = Vector2.new(guiX + W - 20, guiY + 55),
+    Color = Color3.fromRGB(60, 60, 60),
+    Thickness = 1,
+    Visible = true,
+})
+
+-- Label "Clé de licence"
+gui.keyLabel = newDrawing("Text", {
+    Text = "CLÉ DE LICENCE",
+    Size = 11,
+    Position = Vector2.new(guiX + 25, guiY + 75),
+    Color = Color3.fromRGB(150, 150, 150),
+    Font = 1,
+    Visible = true,
+})
+
+-- Input background
+gui.inputBg = newDrawing("Square", {
+    Size = Vector2.new(W - 50, 45),
+    Position = Vector2.new(guiX + 25, guiY + 95),
+    Color = Color3.fromRGB(30, 30, 38),
+    Transparency = 0.9,
+    Visible = true,
+    Filled = true,
+})
+
+-- Input border
+gui.inputBorder = newDrawing("Square", {
+    Size = Vector2.new(W - 48, 2),
+    Position = Vector2.new(guiX + 26, guiY + 138),
+    Color = Color3.fromRGB(200, 60, 60),
+    Thickness = 1,
+    Visible = true,
+    Filled = true,
+})
+
+-- Input text (reflète ce que l'utilisateur tape)
+gui.inputText = newDrawing("Text", {
+    Text = "",
+    Size = 18,
+    Position = Vector2.new(guiX + 38, guiY + 104),
+    Color = Color3.fromRGB(255, 255, 255),
+    Visible = true,
+})
+
+-- Input placeholder
+gui.inputPlaceholder = newDrawing("Text", {
+    Text = "RIVALS-XXXX-XXXX-XXXX",
+    Size = 16,
+    Position = Vector2.new(guiX + 38, guiY + 106),
+    Color = Color3.fromRGB(70, 70, 80),
+    Visible = true,
+})
+
+-- Bouton Activer
+gui.btnBg = newDrawing("Square", {
+    Size = Vector2.new(W - 50, 48),
+    Position = Vector2.new(guiX + 25, guiY + 160),
+    Color = Color3.fromRGB(200, 50, 50),
+    Thickness = 0,
+    Visible = true,
+    Filled = true,
+})
+
+gui.btnText = newDrawing("Text", {
+    Text = "ACTIVER",
+    Size = 18,
+    Position = Vector2.new(guiX + W/2 - 45, guiY + 172),
+    Color = Color3.fromRGB(255, 255, 255),
+    Font = 2,
+    Visible = true,
+})
+
+-- Message de statut
+gui.statusText = newDrawing("Text", {
+    Text = "",
+    Size = 14,
+    Position = Vector2.new(guiX + 25, guiY + 225),
+    Color = Color3.fromRGB(255, 255, 255),
+    Visible = true,
+})
+
+-- Console debug (en bas, 4 dernières lignes visibles)
+gui.debugTitle = newDrawing("Text", {
+    Text = "CONSOLE",
+    Size = 10,
+    Position = Vector2.new(guiX + 25, guiY + 255),
+    Color = Color3.fromRGB(100, 100, 100),
+    Font = 1,
+    Visible = true,
+})
+
+local debugLines = {}
+for i = 1, 4 do
+    debugLines[i] = newDrawing("Text", {
+        Text = "",
+        Size = 10,
+        Position = Vector2.new(guiX + 25, guiY + 268 + (i-1)*14),
+        Color = Color3.fromRGB(130, 130, 130),
+        Font = 2, -- monospace si dispo, sinon normal
+        Visible = true,
+    })
+end
+
+-- Icône de chargement
+gui.spinnerText = "\226\128\162" -- • en UTF-8 (fallback simple)
+gui.spinner = newDrawing("Text", {
+    Text = "",
+    Size = 20,
+    Position = Vector2.new(guiX + W/2 - 10, guiY + 220),
+    Color = Color3.fromRGB(200, 60, 60),
+    Visible = false,
+})
+
+-- ==================== MISE À JOUR CONSOLE ====================
+local function updateDebugConsole()
+    local start = math.max(1, #debugMessages - 3)
+    for i = 1, 4 do
+        local idx = start + i - 1
+        if idx <= #debugMessages then
+            local msg = debugMessages[idx]
+            -- Faire apparaître en fondu selon l'âge
+            local age = tick() - msg.time
+            local alpha = math.clamp(1 - age / 10, 0.2, 1)
+            debugLines[i].Text = msg.text:sub(1, 55)
+            debugLines[i].Color = msg.color
+            debugLines[i].Transparency = 1 - alpha
+        else
+            debugLines[i].Text = ""
+        end
+    end
+end
+
+RunService.RenderStepped:Connect(updateDebugConsole)
+
+-- ==================== TEXTBOX INVISIBLE POUR SAISIE ====================
+local sg = Instance.new("ScreenGui")
+sg.Name = "RivalsInputGUI"
+sg.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+sg.ResetOnSpawn = false
+sg.IgnoreGuiInset = true
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, W - 50, 0, 45)
+frame.Position = UDim2.new(0, guiX + 25, 0, guiY + 95)
+frame.BackgroundTransparency = 1
+frame.Parent = sg
+
+local textBox = Instance.new("TextBox")
+textBox.Size = UDim2.new(1, 0, 1, 0)
+textBox.BackgroundTransparency = 1
+textBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+textBox.PlaceholderText = ""
+textBox.Font = Enum.Font.SourceSans
+textBox.TextSize = 18
+textBox.Text = ""
+textBox.ClearTextOnFocus = false
+textBox.Parent = frame
+
+-- Mettre à jour le texte affiché dans le Drawing
+textBox.Changed:Connect(function(prop)
+    if prop == "Text" then
+        gui.inputText.Text = textBox.Text
+        gui.inputPlaceholder.Visible = (#textBox.Text == 0)
+        -- Censure partielle pour le style (affiche les 4 derniers caractères en clair)
+    end
+end)
+
+-- Focus auto
+task.wait(0.3)
+textBox:CaptureFocus()
+
+-- ==================== BARRE DE PROGRÈS (chargement) ====================
+gui.progressBg = newDrawing("Square", {
+    Size = Vector2.new(W - 50, 6),
+    Position = Vector2.new(guiX + 25, guiY + 288),
+    Color = Color3.fromRGB(40, 40, 50),
+    Visible = false,
+    Filled = true,
+})
+
+gui.progressFill = newDrawing("Square", {
+    Size = Vector2.new(0, 6),
+    Position = Vector2.new(guiX + 25, guiY + 288),
+    Color = Color3.fromRGB(200, 60, 60),
+    Visible = false,
+    Filled = true,
+})
+
+local function setProgress(pct) -- 0 à 1
+    gui.progressFill.Size = Vector2.new((W - 50) * pct, 6)
+    gui.progressFill.Visible = true
+    gui.progressBg.Visible = true
+end
+
+local function hideProgress()
+    gui.progressFill.Visible = false
+    gui.progressBg.Visible = false
+end
+
+-- ==================== VÉRIFICATION DE CLÉ ====================
+local isVerifying = false
+
+local function resetUI()
+    gui.btnText.Text = "ACTIVER"
+    gui.btnBg.Color = Color3.fromRGB(200, 50, 50)
+    gui.statusText.Text = ""
+    gui.inputBorder.Color = Color3.fromRGB(200, 60, 60)
+    hideProgress()
+    isVerifying = false
+    textBox.Text = ""
+    textBox:CaptureFocus()
+end
+
+local function showError(msg)
+    gui.statusText.Text = "❌ " .. msg
+    gui.statusText.Color = Color3.fromRGB(255, 70, 70)
+    gui.btnText.Text = "RÉESSAYER"
+    gui.btnBg.Color = Color3.fromRGB(180, 50, 50)
+    gui.inputBorder.Color = Color3.fromRGB(255, 50, 50)
+    isVerifying = false
+    task.wait(0.1)
+    textBox:CaptureFocus()
+end
+
+local function showSuccess(msg)
+    gui.statusText.Text = "✅ " .. msg
+    gui.statusText.Color = Color3.fromRGB(50, 255, 100)
+    gui.btnText.Text = "✓ OK"
+    gui.btnBg.Color = Color3.fromRGB(30, 140, 40)
+    gui.inputBorder.Color = Color3.fromRGB(50, 220, 80)
+end
+
+local function showLoading(msg)
+    gui.statusText.Text = "⏳ " .. msg
+    gui.statusText.Color = Color3.fromRGB(255, 200, 50)
+    gui.btnText.Text = "•••"
+    gui.btnBg.Color = Color3.fromRGB(140, 100, 30)
+end
+
+-- ==================== FONCTION PRINCIPALE ====================
+local function checkKey(enteredKey)
+    if isVerifying then return end
+    if #enteredKey < 5 then
+        showError("Clé trop courte (min. 5 caractères)")
+        return
+    end
+    
+    isVerifying = true
+    debug("Début vérification pour : " .. enteredKey:sub(1, 8) .. "***")
+    showLoading("Téléchargement de la liste des clés...")
+    setProgress(0.2)
+    
+    -- Télécharger keys.txt
+    local ok, keysContent = pcall(function()
+        return game:HttpGet(URL_KEYS)
+    end)
+    
+    if not ok then
+        debug("ERREUR: Impossible de contacter GitHub", Color3.fromRGB(255, 80, 80))
+        showError("Impossible de contacter le serveur (GitHub down ?)")
+        hideProgress()
+        return
+    end
+    
+    debug("Liste des clés téléchargée (" .. #keysContent .. " octets)")
+    setProgress(0.5)
+    showLoading("Vérification de la clé...")
+    
+    -- Chercher la clé ligne par ligne
+    local found = false
+    for line in keysContent:gmatch("[^\r\n]+") do
+        local trimmed = line:match("^%s*(.-)%s*$")
+        if trimmed == enteredKey then
+            found = true
+            break
+        end
+    end
+    
+    if not found then
+        debug("Clé invalide: " .. enteredKey:sub(1, 8) .. "***", Color3.fromRGB(255, 100, 100))
+        showError("Clé invalide ou révoquée")
+        hideProgress()
+        return
+    end
+    
+    -- ✅ CLÉ VALIDE
+    debug("✅ Clé valide !", Color3.fromRGB(50, 255, 100))
+    showSuccess("Clé valide !")
+    setProgress(0.7)
+    
+    -- Sauvegarder localement
+    pcall(function()
+        if writefile then
+            writefile("rivals_key_saved.txt", enteredKey)
+            debug("Clé sauvegardée localement")
+        end
+    end)
+    
+    task.wait(0.8)
+    
+    -- Télécharger le cheat
+    showLoading("Téléchargement du cheat...")
+    setProgress(0.8)
+    debug("Téléchargement de " .. URL_CHEAT)
+    
+    local cheatOk, cheatCode = pcall(function()
+        return game:HttpGet(URL_CHEAT)
+    end)
+    
+    if not cheatOk then
+        debug("ERREUR téléchargement cheat: " .. tostring(cheatCode), Color3.fromRGB(255, 80, 80))
+        showError("Impossible de télécharger le cheat")
+        hideProgress()
+        isVerifying = false
+        return
+    end
+    
+    debug("Cheat téléchargé : " .. #cheatCode .. " caractères", Color3.fromRGB(100, 255, 100))
+    setProgress(0.9)
+    showLoading("Exécution...")
+    
+    -- Nettoyer la GUI AVANT d'exécuter le cheat
+    -- (sinon le cheat peut interférer avec nos Drawings)
+    task.wait(0.3)
+    debug("Nettoyage du loader...")
+    removeAllDrawings()
+    sg:Destroy()
+    
+    -- Exécuter
+    debug("Exécution du cheat...", Color3.fromRGB(255, 200, 50))
+    setProgress(1.0)
+    
+    local execOk, execErr = pcall(function()
+        loadstring(cheatCode)()
+    end)
+    
+    if not execOk then
+        -- Le cheat a planté, mais on a plus de GUI pour l'afficher
+        -- On crée une notification rapide
+        warn("[RIVALS] ERREUR D'EXÉCUTION : " .. tostring(execErr))
+        local errNotif = Drawing.new("Text")
+        errNotif.Text = "❌ ERREUR CHEAT: " .. tostring(execErr):sub(1, 80)
+        errNotif.Size = 14
+        errNotif.Position = Vector2.new(Camera.ViewportSize.X/2 - 200, Camera.ViewportSize.Y/2 + 50)
+        errNotif.Color = Color3.fromRGB(255, 60, 60)
+        errNotif.Visible = true
+        errNotif.Font = 2
+        task.wait(8)
+        pcall(function() errNotif:Remove() end)
+    else
+        debug("✅ Cheat exécuté avec succès !", Color3.fromRGB(50, 255, 100))
+    end
+end
+
+-- ==================== ÉVÉNEMENTS ====================
+textBox.FocusLost:Connect(function(enterPressed)
+    if enterPressed and textBox.Text ~= "" then
+        checkKey(textBox.Text)
+    end
+end)
+
+-- Clic sur le bouton Activer
+UIS.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        local mousePos = UIS:GetMouseLocation()
+        local bx, by = guiX + 25, guiY + 160
+        local bw, bh = W - 50, 48
+        if mousePos.X >= bx and mousePos.X <= bx + bw and mousePos.Y >= by and mousePos.Y <= by + bh then
+            if textBox.Text ~= "" and not isVerifying then
+                checkKey(textBox.Text)
+            end
+        end
+    end
+end)
+
+-- ==================== AUTO-LOGIN ====================
+task.wait(0.8)
+pcall(function()
+    if readfile then
+        local saved = readfile("rivals_key_saved.txt")
+        if saved and #saved > 3 then
+            saved = saved:match("^%s*(.-)%s*$")
+            debug("Clé sauvegardée trouvée, auto-vérification...")
+            gui.inputText.Text = saved
+            textBox.Text = saved
+            gui.inputPlaceholder.Visible = false
+            task.wait(0.3)
+            checkKey(saved)
+        end
+    end
+end)
+
+debug("Loader prêt — en attente de la clé", Color3.fromRGB(100, 200, 255))
